@@ -2,14 +2,19 @@
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
+#include <errno.h>
 #include <math.h>
 
 #define VOTE_ALLOC_COUNT 1024
 #define BLOCK_SAMPLES 14
 
+#ifdef __linux__
 #define ALSA_PLAY 1
+#endif
+#if ALSA_PLAY
 #include <alsa/asoundlib.h>
 snd_pcm_t* ALSA_PCM;
+#endif
 FILE* WAVE_FILE_OUT = NULL;
 
 static int64_t ERROR_AVG = 0;
