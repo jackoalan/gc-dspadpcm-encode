@@ -230,7 +230,9 @@ int main(int argc, char** argv)
     snd_pcm_hw_params_set_rate_near(ALSA_PCM, hwparams, &sample_rate, 0);
     snd_pcm_hw_params_set_channels(ALSA_PCM, hwparams, 1);
     snd_pcm_hw_params(ALSA_PCM, hwparams);
-    ALSA_WAVE = fopen("/home/jacko/Desktop/alsa_play.wav", "wb");
+    char wave_path[1024];
+    snprintf(wave_path, 1024, "%s.wav", argv[2]);
+    ALSA_WAVE = fopen(wave_path, "wb");
     for (i=0 ; i<11 ; ++i)
         fwrite("\0\0\0\0", 1, 4, ALSA_WAVE);
 #endif

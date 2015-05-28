@@ -5,3 +5,6 @@ CONFIG -= qt
 
 SOURCES += main.c
 LIBS += -lasound
+
+DISTFILES += \
+    README.md
