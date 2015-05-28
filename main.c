@@ -5,7 +5,8 @@
 #include <math.h>
 
 #define VOTE_ALLOC_COUNT 1024
-#define BLOCK_SAMPLES 14
+#define CORRELATE_SAMPLES 0x3800
+#define PACKET_SAMPLES 14
 
 #define ALSA_PLAY 1
 #include <alsa/asoundlib.h>
@@ -48,17 +49,17 @@ static int64_t filter(int64_t* samps, int m)
 {
     int i;
     int64_t avg = 0;
-    for (i=0 ; i<BLOCK_SAMPLES ; ++i)
+    for (i=0 ; i<CORRELATE_SAMPLES ; ++i)
         avg += samps[i] * samps[i+m];
-    return avg / BLOCK_SAMPLES;
+    return avg / CORRELATE_SAMPLES;
 }
 
 static void adpcm_autocorrelate(struct coef_pair_vote* out,
                                 int16_t* samps)
 {
-    int64_t expSamps[BLOCK_SAMPLES+3];
+    int64_t expSamps[CORRELATE_SAMPLES+3];
     int i;
-    for (i=-1 ; i<BLOCK_SAMPLES+2 ; ++i)
+    for (i=-1 ; i<CORRELATE_SAMPLES+2 ; ++i)
         expSamps[i+1] = samps[i];
 
     int64_t fn1 = filter(&expSamps[1], -1);
@@ -140,7 +141,7 @@ static void adpcm_block_predictor(int* hist1, int* hist2,
         int avgErr = 0;
         lhist1 = *hist1;
         lhist2 = *hist2;
-        for (s=0 ; s<BLOCK_SAMPLES ; ++s)
+        for (s=0 ; s<PACKET_SAMPLES ; ++s)
         {
             int expSamp = samps[s] << 11;
             int testSamp = lhist1 * a1best[i] + lhist2 * a2best[i];
@@ -162,7 +163,7 @@ static void adpcm_block_predictor(int* hist1, int* hist2,
     int maxErr = 0;
     lhist1 = *hist1;
     lhist2 = *hist2;
-    for (s=0 ; s<BLOCK_SAMPLES ; ++s)
+    for (s=0 ; s<PACKET_SAMPLES ; ++s)
     {
         int expSamp = samps[s] << 11;
         int testSamp = lhist1 * a1best[bestI] + lhist2 * a2best[bestI];
@@ -187,13 +188,13 @@ static void adpcm_block_predictor(int* hist1, int* hist2,
         }
     }
 
-    int16_t wave_buf[BLOCK_SAMPLES];
+    int16_t wave_buf[PACKET_SAMPLES];
 
     /* Final predictor pass */
     lhist1 = *hist1;
     lhist2 = *hist2;
-    char errors[BLOCK_SAMPLES];
-    for (s=0 ; s<BLOCK_SAMPLES ; ++s)
+    char errors[PACKET_SAMPLES];
+    for (s=0 ; s<PACKET_SAMPLES ; ++s)
     {
         int expSamp = samps[s] << 11;
         int testSamp = lhist1 * a1best[bestI] + lhist2 * a2best[bestI];
@@ -220,13 +221,13 @@ static void adpcm_block_predictor(int* hist1, int* hist2,
     *hist2 = lhist2;
 
 #if ALSA_PLAY
-    snd_pcm_writei(ALSA_PCM, wave_buf, BLOCK_SAMPLES);
+    snd_pcm_writei(ALSA_PCM, wave_buf, PACKET_SAMPLES);
 #endif
-    fwrite(wave_buf, 2, BLOCK_SAMPLES, WAVE_FILE_OUT);
+    fwrite(wave_buf, 2, PACKET_SAMPLES, WAVE_FILE_OUT);
 
     /* Write block out */
     blockOut[0] = bestI << 4 | expLog;
-    for (s=0 ; s<BLOCK_SAMPLES ; s+=2)
+    for (s=0 ; s<PACKET_SAMPLES ; s+=2)
         blockOut[s/2+1] = (errors[s] & 0xf) << 4 | (errors[s+1] & 0xf);
 }
 
@@ -348,9 +349,12 @@ int main(int argc, char** argv)
 
     printf("\e[?25l"); /* hide the cursor */
 
-    int packetCount = samplecount / BLOCK_SAMPLES;
+    int packetCount = samplecount / PACKET_SAMPLES;
+    int correlateBlockCount = samplecount / CORRELATE_SAMPLES + 1;
 
-    int16_t* sampsBuf = calloc(samplecount + 2, 2);
+    size_t sampsBufSz = (correlateBlockCount * CORRELATE_SAMPLES + 2) * 2;
+    int16_t* sampsBuf = malloc(sampsBufSz);
+    memset(sampsBuf, 0, sampsBufSz);
     int16_t* samps = &sampsBuf[2];
     fread(samps, samplecount, 2, fin);
     fclose(fin);
@@ -366,7 +370,7 @@ int main(int argc, char** argv)
     struct coef_pair_vote* votesMax = &votesBegin[VOTE_ALLOC_COUNT];
     for (p=0 ; p<packetCount ; ++p)
     {
-        adpcm_block_vote(&votesBegin, &votesEnd, &votesMax, &samps[p*BLOCK_SAMPLES]);
+        adpcm_block_vote(&votesBegin, &votesEnd, &votesMax, &samps[p*CORRELATE_SAMPLES]);
         size_t vc = votesEnd - votesBegin;
         printf("\rCORRELATE [ %d / %d ] %zu votes          ", p+1, packetCount, vc);
     }
@@ -399,7 +403,7 @@ int main(int argc, char** argv)
     /* Open output file */
     FILE* fout = fopen(argv[2], "wb");
     struct dspadpcm_header header = {};
-    header.num_samples = __builtin_bswap32(packetCount * BLOCK_SAMPLES);
+    header.num_samples = __builtin_bswap32(packetCount * PACKET_SAMPLES);
     header.num_nibbles = __builtin_bswap32(packetCount * 16);
     header.sample_rate = __builtin_bswap32(samplerate);
     for (i=0 ; i<8 ; ++i)
@@ -417,11 +421,11 @@ int main(int argc, char** argv)
     char block[8];
     for (p=0 ; p<packetCount ; ++p)
     {
-        adpcm_block_predictor(&hist1, &hist2, a1best, a2best, &samps[p*BLOCK_SAMPLES], block);
+        adpcm_block_predictor(&hist1, &hist2, a1best, a2best, &samps[p*PACKET_SAMPLES], block);
         fwrite(block, 1, 8, fout);
         printf("\rPREDICT [ %d / %d ]          ", p+1, packetCount);
     }
-    printf("\nDONE! %d samples processed\n", packetCount * BLOCK_SAMPLES);
+    printf("\nDONE! %d samples processed\n", packetCount * PACKET_SAMPLES);
     printf("\e[?25h"); /* show the cursor */
 
     printf("ERROR: %ld\n", ERROR_AVG / ERROR_SAMP_COUNT);
