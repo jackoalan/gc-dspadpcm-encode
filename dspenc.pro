@@ -4,7 +4,7 @@ CONFIG -= app_bundle
 CONFIG -= qt
 
 SOURCES += main.c
-LIBS += -lasound
+linux:LIBS += -lasound
 
 DISTFILES += \
     README.md
