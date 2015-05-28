@@ -15,6 +15,28 @@ FILE* ALSA_WAVE = NULL;
 static int64_t ERROR_AVG = 0;
 static int64_t ERROR_SAMP_COUNT = 0;
 
+/* Standard DSPADPCM header */
+struct dspadpcm_header
+{
+    uint32_t num_samples;
+    uint32_t num_nibbles;
+    uint32_t sample_rate;
+    uint16_t loop_flag;
+    uint16_t format; /* 0 for ADPCM */
+    uint32_t loop_start;
+    uint32_t loop_end;
+    uint32_t zero;
+    int16_t coef[8][2];
+    int16_t gain;
+    int16_t ps;
+    int16_t hist1;
+    int16_t hist2;
+    int16_t loop_ps;
+    int16_t loop_hist1;
+    int16_t loop_hist2;
+    uint16_t pad[11];
+};
+
 /* Used to build distribution set of coefficients */
 struct coef_pair_vote
 {
@@ -269,9 +291,9 @@ int main(int argc, char** argv)
     printf("\n");
 
     /* Filter distribution set to statistically best */
-    int16_t a1best[16] = {};
-    int16_t a2best[16] = {};
-    for (i=0 ; i<16 ; ++i)
+    int16_t a1best[8] = {};
+    int16_t a2best[8] = {};
+    for (i=0 ; i<8 ; ++i)
     {
         unsigned bestVotes = 0;
         struct coef_pair_vote* it;
@@ -294,17 +316,18 @@ int main(int argc, char** argv)
 
     /* Open output file */
     FILE* fout = fopen(argv[2], "wb");
-    int16_t prev1 = __builtin_bswap16(samps[-1]);
-    int16_t prev2 = __builtin_bswap16(samps[-2]);
-    fwrite(&prev1, 1, 2, fout);
-    fwrite(&prev2, 1, 2, fout);
-    for (i=0 ; i<16 ; ++i)
+    struct dspadpcm_header header = {};
+    header.num_samples = __builtin_bswap32(packetCount * BLOCK_SAMPLES);
+    header.num_nibbles = __builtin_bswap32(packetCount * 16);
+    header.sample_rate = __builtin_bswap32(32000);
+    for (i=0 ; i<8 ; ++i)
     {
-        int16_t bsa = __builtin_bswap16(a1best[i]);
-        int16_t bsb = __builtin_bswap16(a2best[i]);
-        fwrite(&bsa, 1, 2, fout);
-        fwrite(&bsb, 1, 2, fout);
+        header.coef[i][0] = __builtin_bswap16(a1best[i]);
+        header.coef[i][1] = __builtin_bswap16(a2best[i]);
     }
+    header.hist1 = __builtin_bswap16(samps[-1]);
+    header.hist2 = __builtin_bswap16(samps[-2]);
+    fwrite(&header, 1, sizeof(header), fout);
 
     /* Execute encoding-predictor for each block */
     int hist1 = samps[-1];
