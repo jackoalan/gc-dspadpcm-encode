@@ -10,7 +10,7 @@
 #define ALSA_PLAY 1
 #include <alsa/asoundlib.h>
 snd_pcm_t* ALSA_PCM;
-FILE* ALSA_WAVE = NULL;
+FILE* WAVE_FILE_OUT = NULL;
 
 static int64_t ERROR_AVG = 0;
 static int64_t ERROR_SAMP_COUNT = 0;
@@ -135,7 +135,7 @@ static void adpcm_block_predictor(int* hist1, int* hist2,
     int bestI;
     int lhist1;
     int lhist2;
-    for (i=0 ; i<16 ; ++i)
+    for (i=0 ; i<8 ; ++i)
     {
         int avgErr = 0;
         lhist1 = *hist1;
@@ -187,9 +187,7 @@ static void adpcm_block_predictor(int* hist1, int* hist2,
         }
     }
 
-#if ALSA_PLAY
-    int16_t alsa_buf[BLOCK_SAMPLES];
-#endif
+    int16_t wave_buf[BLOCK_SAMPLES];
 
     /* Final predictor pass */
     lhist1 = *hist1;
@@ -210,10 +208,8 @@ static void adpcm_block_predictor(int* hist1, int* hist2,
         lhist2 = lhist1;
         lhist1 = samp_clamp(lastPred >> 11);
 
-#if ALSA_PLAY
-        alsa_buf[s] = lhist1;
-        alsa_buf[s] = samps[s];
-#endif
+        wave_buf[s] = lhist1;
+        //wave_buf[s] = samps[s];
 
         /* PROFILE - sample error */
         //printf("%d\t%d\t%d\t%d\t%d\n", bestI, expLog, samps[s], lhist1, samps[s] - lhist1);
@@ -224,9 +220,9 @@ static void adpcm_block_predictor(int* hist1, int* hist2,
     *hist2 = lhist2;
 
 #if ALSA_PLAY
-    snd_pcm_writei(ALSA_PCM, alsa_buf, BLOCK_SAMPLES);
-    fwrite(alsa_buf, 2, BLOCK_SAMPLES, ALSA_WAVE);
+    snd_pcm_writei(ALSA_PCM, wave_buf, BLOCK_SAMPLES);
 #endif
+    fwrite(wave_buf, 2, BLOCK_SAMPLES, WAVE_FILE_OUT);
 
     /* Write block out */
     blockOut[0] = bestI << 4 | expLog;
@@ -239,7 +235,98 @@ int main(int argc, char** argv)
     int i,p;
 
     if (argc < 3)
+    {
+        printf("Usage: dspenc <wavin> <dspout>\n");
+        return 0;
+    }
+
+    FILE* fin = fopen(argv[1], "rb");
+    if (!fin)
+    {
+        fprintf(stderr, "'%s' won't open - %s\n", argv[1], strerror(errno));
+        fclose(fin);
         return -1;
+    }
+    char riffcheck[4];
+    fread(riffcheck, 1, 4, fin);
+    if (memcmp(riffcheck, "RIFF", 4))
+    {
+        fprintf(stderr, "'%s' not a valid RIFF file\n", argv[1]);
+        fclose(fin);
+        return -1;
+    }
+    fseek(fin, 4, SEEK_CUR);
+    fread(riffcheck, 1, 4, fin);
+    if (memcmp(riffcheck, "WAVE", 4))
+    {
+        fprintf(stderr, "'%s' not a valid WAVE file\n", argv[1]);
+        fclose(fin);
+        return -1;
+    }
+
+    uint32_t samplerate = 0;
+    uint32_t samplecount = 0;
+    while (fread(riffcheck, 1, 4, fin) == 4)
+    {
+        uint32_t chunkSz;
+        fread(&chunkSz, 1, 4, fin);
+        if (!memcmp(riffcheck, "fmt ", 4))
+        {
+            uint16_t fmt;
+            fread(&fmt, 1, 2, fin);
+            if (fmt != 1)
+            {
+                fprintf(stderr, "'%s' has invalid format %u\n", argv[1], fmt);
+                fclose(fin);
+                return -1;
+            }
+
+            uint16_t nchan;
+            fread(&nchan, 1, 2, fin);
+            if (nchan != 1)
+            {
+                fprintf(stderr, "'%s' must have 1 channel, not %u\n", argv[1], nchan);
+                fclose(fin);
+                return -1;
+            }
+
+            fread(&samplerate, 1, 4, fin);
+            fseek(fin, 4, SEEK_CUR);
+
+            uint16_t bytesPerSample;
+            fread(&bytesPerSample, 1, 2, fin);
+            if (bytesPerSample != 2)
+            {
+                fprintf(stderr, "'%s' must have 2 bytes per sample, not %u\n", argv[1], bytesPerSample);
+                fclose(fin);
+                return -1;
+            }
+
+            uint16_t bitsPerSample;
+            fread(&bitsPerSample, 1, 2, fin);
+            if (bitsPerSample != 16)
+            {
+                fprintf(stderr, "'%s' must have 16 bits per sample, not %u\n", argv[1], bitsPerSample);
+                fclose(fin);
+                return -1;
+            }
+        }
+        else if (!memcmp(riffcheck, "data", 4))
+        {
+            fread(&samplecount, 1, 4, fin);
+            samplecount /= 2;
+            break;
+        }
+        else
+            fseek(fin, chunkSz, SEEK_CUR);
+    }
+
+    if (!samplerate || !samplecount)
+    {
+        fprintf(stderr, "'%s' must have a valid data chunk following a fmt chunk\n", argv[1]);
+        fclose(fin);
+        return -1;
+    }
 
 #if ALSA_PLAY
     snd_pcm_open(&ALSA_PCM, "default", SND_PCM_STREAM_PLAYBACK, 0);
@@ -252,25 +339,21 @@ int main(int argc, char** argv)
     snd_pcm_hw_params_set_rate_near(ALSA_PCM, hwparams, &sample_rate, 0);
     snd_pcm_hw_params_set_channels(ALSA_PCM, hwparams, 1);
     snd_pcm_hw_params(ALSA_PCM, hwparams);
-    char wave_path[1024];
-    snprintf(wave_path, 1024, "%s.wav", argv[2]);
-    ALSA_WAVE = fopen(wave_path, "wb");
-    for (i=0 ; i<11 ; ++i)
-        fwrite("\0\0\0\0", 1, 4, ALSA_WAVE);
 #endif
+
+    char wavePathOut[1024];
+    snprintf(wavePathOut, 1024, "%s.wav", argv[2]);
+    WAVE_FILE_OUT = fopen(wavePathOut, "wb");
+    for (i=0 ; i<11 ; ++i)
+        fwrite("\0\0\0\0", 1, 4, WAVE_FILE_OUT);
 
     printf("\e[?25l"); /* hide the cursor */
 
-    FILE* fin = fopen(argv[1], "rb");
+    int packetCount = samplecount / BLOCK_SAMPLES;
 
-    fseek(fin, 0, SEEK_END);
-    int sampCount = ftell(fin) / 2;
-    fseek(fin, 0, SEEK_SET);
-    int packetCount = sampCount / BLOCK_SAMPLES;
-
-    int16_t* sampsBuf = calloc(sampCount + 2, 2);
+    int16_t* sampsBuf = calloc(samplecount + 2, 2);
     int16_t* samps = &sampsBuf[2];
-    fread(samps, sampCount, 2, fin);
+    fread(samps, samplecount, 2, fin);
     fclose(fin);
 
     /* Extrapolate initial prev-samp */
@@ -347,30 +430,31 @@ int main(int argc, char** argv)
 #if ALSA_PLAY
     snd_pcm_drain(ALSA_PCM);
     snd_pcm_close(ALSA_PCM);
-    uint32_t totalSz = ftell(ALSA_WAVE) - 8;
-    fseek(ALSA_WAVE, 0, SEEK_SET);
-    fwrite("RIFF", 1, 4, ALSA_WAVE);
-    fwrite(&totalSz, 1, 4, ALSA_WAVE);
-    fwrite("WAVE", 1, 4, ALSA_WAVE);
-    fwrite("fmt ", 1, 4, ALSA_WAVE);
+#endif
+
+    uint32_t totalSz = ftell(WAVE_FILE_OUT) - 8;
+    fseek(WAVE_FILE_OUT, 0, SEEK_SET);
+    fwrite("RIFF", 1, 4, WAVE_FILE_OUT);
+    fwrite(&totalSz, 1, 4, WAVE_FILE_OUT);
+    fwrite("WAVE", 1, 4, WAVE_FILE_OUT);
+    fwrite("fmt ", 1, 4, WAVE_FILE_OUT);
     uint32_t sixteen = 16;
     uint16_t one = 1;
     uint32_t threetwok = 32000;
     uint32_t sixfourk = 64000;
     uint16_t two = 2;
     uint16_t sixteens = 16;
-    fwrite(&sixteen, 1, 4, ALSA_WAVE);
-    fwrite(&one, 1, 2, ALSA_WAVE);
-    fwrite(&one, 1, 2, ALSA_WAVE);
-    fwrite(&threetwok, 1, 4, ALSA_WAVE);
-    fwrite(&sixfourk, 1, 4, ALSA_WAVE);
-    fwrite(&two, 1, 2, ALSA_WAVE);
-    fwrite(&sixteens, 1, 2, ALSA_WAVE);
-    fwrite("data", 1, 4, ALSA_WAVE);
+    fwrite(&sixteen, 1, 4, WAVE_FILE_OUT);
+    fwrite(&one, 1, 2, WAVE_FILE_OUT);
+    fwrite(&one, 1, 2, WAVE_FILE_OUT);
+    fwrite(&threetwok, 1, 4, WAVE_FILE_OUT);
+    fwrite(&sixfourk, 1, 4, WAVE_FILE_OUT);
+    fwrite(&two, 1, 2, WAVE_FILE_OUT);
+    fwrite(&sixteens, 1, 2, WAVE_FILE_OUT);
+    fwrite("data", 1, 4, WAVE_FILE_OUT);
     totalSz -= 36;
-    fwrite(&totalSz, 1, 4, ALSA_WAVE);
-    fclose(ALSA_WAVE);
-#endif
+    fwrite(&totalSz, 1, 4, WAVE_FILE_OUT);
+    fclose(WAVE_FILE_OUT);
 
     fclose(fout);
     free(votesBegin);
