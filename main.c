@@ -132,7 +132,7 @@ static void adpcm_block_predictor(int* hist1, int* hist2,
 
     /* Coefficient selection pass */
     unsigned epsilon = ~0;
-    int bestI;
+    int bestI = 0;
     int lhist1;
     int lhist2;
     for (i=0 ; i<8 ; ++i)
@@ -202,7 +202,7 @@ static void adpcm_block_predictor(int* hist1, int* hist2,
         errors[s] = err >> expLog & 0xf;
 
         /* Decoder predictor to track history state (and profile error) */
-        int lastPred = nibble_to_int[errors[s]] << expLog;
+        int lastPred = nibble_to_int[(int)errors[s]] << expLog;
         lastPred <<= 11;
         lastPred += 1024 + testSamp;
         lhist2 = lhist1;
@@ -424,7 +424,7 @@ int main(int argc, char** argv)
     printf("\nDONE! %d samples processed\n", packetCount * BLOCK_SAMPLES);
     printf("\e[?25h"); /* show the cursor */
 
-    printf("ERROR: %lld\n", ERROR_AVG / ERROR_SAMP_COUNT);
+    printf("ERROR: %ld\n", ERROR_AVG / ERROR_SAMP_COUNT);
 
 #if ALSA_PLAY
     snd_pcm_drain(ALSA_PCM);
