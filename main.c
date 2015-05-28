@@ -313,8 +313,7 @@ int main(int argc, char** argv)
         }
         else if (!memcmp(riffcheck, "data", 4))
         {
-            fread(&samplecount, 1, 4, fin);
-            samplecount /= 2;
+            samplecount = chunkSz / 2;
             break;
         }
         else
@@ -335,7 +334,7 @@ int main(int argc, char** argv)
     snd_pcm_hw_params_any(ALSA_PCM, hwparams);
     snd_pcm_hw_params_set_access(ALSA_PCM, hwparams, SND_PCM_ACCESS_RW_INTERLEAVED);
     snd_pcm_hw_params_set_format(ALSA_PCM, hwparams, SND_PCM_FORMAT_S16_LE);
-    unsigned int sample_rate = 32000;
+    unsigned int sample_rate = samplerate;
     snd_pcm_hw_params_set_rate_near(ALSA_PCM, hwparams, &sample_rate, 0);
     snd_pcm_hw_params_set_channels(ALSA_PCM, hwparams, 1);
     snd_pcm_hw_params(ALSA_PCM, hwparams);
@@ -402,7 +401,7 @@ int main(int argc, char** argv)
     struct dspadpcm_header header = {};
     header.num_samples = __builtin_bswap32(packetCount * BLOCK_SAMPLES);
     header.num_nibbles = __builtin_bswap32(packetCount * 16);
-    header.sample_rate = __builtin_bswap32(32000);
+    header.sample_rate = __builtin_bswap32(samplerate);
     for (i=0 ; i<8 ; ++i)
     {
         header.coef[i][0] = __builtin_bswap16(a1best[i]);
@@ -440,8 +439,8 @@ int main(int argc, char** argv)
     fwrite("fmt ", 1, 4, WAVE_FILE_OUT);
     uint32_t sixteen = 16;
     uint16_t one = 1;
-    uint32_t threetwok = 32000;
-    uint32_t sixfourk = 64000;
+    uint32_t threetwok = samplerate;
+    uint32_t sixfourk = samplerate * 2;
     uint16_t two = 2;
     uint16_t sixteens = 16;
     fwrite(&sixteen, 1, 4, WAVE_FILE_OUT);
