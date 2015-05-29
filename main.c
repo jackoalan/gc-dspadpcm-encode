@@ -6,11 +6,11 @@
 #include <math.h>
 
 #define VOTE_ALLOC_COUNT 1024
-#define CORRELATE_SAMPLES 0x3800
+#define CORRELATE_SAMPLES 0x3800 /* 1024 packets */
 #define PACKET_SAMPLES 14
 
 #ifdef __linux__
-#define ALSA_PLAY 1
+#define ALSA_PLAY 0
 #endif
 #if ALSA_PLAY
 #include <alsa/asoundlib.h>
@@ -43,6 +43,22 @@ struct dspadpcm_header
     uint16_t pad[11];
 };
 
+static const int nibble_to_int[16] = {0,1,2,3,4,5,6,7,-8,-7,-6,-5,-4,-3,-2,-1};
+
+static inline int samp_clamp(int val)
+{
+    if (val < -32768) val = -32768;
+    if (val > 32767) val = 32767;
+    return val;
+}
+
+static inline int nibble_clamp(int val)
+{
+    if (val < -8) val = -8;
+    if (val > 7) val = 7;
+    return val;
+}
+
 /* Used to build distribution set of coefficients */
 struct coef_pair_vote
 {
@@ -50,31 +66,26 @@ struct coef_pair_vote
     unsigned votes;
 };
 
-static int64_t filter(int64_t* samps, int m)
+static double filter(int16_t* samps, int m)
 {
     int i;
     int64_t avg = 0;
     for (i=0 ; i<CORRELATE_SAMPLES ; ++i)
         avg += samps[i] * samps[i+m];
-    return avg / CORRELATE_SAMPLES;
+    return avg / (double)CORRELATE_SAMPLES;
 }
 
 static void adpcm_autocorrelate(struct coef_pair_vote* out,
                                 int16_t* samps)
 {
-    int64_t expSamps[CORRELATE_SAMPLES+3];
-    int i;
-    for (i=-1 ; i<CORRELATE_SAMPLES+2 ; ++i)
-        expSamps[i+1] = samps[i];
+    double fn1 = filter(samps, -1);
+    double f0 = filter(samps, 0);
+    double f1 = filter(samps, 1);
+    double f2 = filter(samps, 2);
 
-    int64_t fn1 = filter(&expSamps[1], -1);
-    int64_t f0 = filter(&expSamps[1], 0);
-    int64_t f1 = filter(&expSamps[1], 1);
-    int64_t f2 = filter(&expSamps[1], 2);
-
-    int a1 = 0;
-    int a2 = 0;
-    int64_t denom = f0 * f0 - fn1 * f1;
+    double a1 = 0.0;
+    double a2 = 0.0;
+    double denom = f0 * f0 - fn1 * f1;
     if (denom)
     {
         a1 = (f0 * f1 - f1 * f2) / denom;
@@ -83,8 +94,8 @@ static void adpcm_autocorrelate(struct coef_pair_vote* out,
 
     //printf("%d %d\n", a1, a2);
 
-    out->a1 = a1;
-    out->a2 = a2;
+    out->a1 = samp_clamp(a1 * 2048.0);
+    out->a2 = samp_clamp(a2 * 2048.0);
 }
 
 static void adpcm_block_vote(struct coef_pair_vote** begin,
@@ -94,13 +105,13 @@ static void adpcm_block_vote(struct coef_pair_vote** begin,
 {
     struct coef_pair_vote vote = {};
     adpcm_autocorrelate(&vote, samps);
-    int a1 = vote.a1;
-    int a2 = vote.a2;
+    int a1 = vote.a1 >> 8;
+    int a2 = vote.a2 >> 8;
 
     struct coef_pair_vote* it;
     for (it = *begin ; it < *end ; ++it)
     {
-        if (it->a1 == a1 && it->a2 == a2)
+        if (it->a1 >> 8 == a1 && it->a2 >> 8 == a2)
         {
             ++it->votes;
             return;
@@ -115,20 +126,12 @@ static void adpcm_block_vote(struct coef_pair_vote** begin,
         *max = *begin + md + VOTE_ALLOC_COUNT;
     }
 
+    (*end)->votes = 1;
     (*end)->a1 = vote.a1;
     (*end)->a2 = vote.a2;
-    (*end)->votes = 1;
     ++(*end);
 }
 
-static const int nibble_to_int[16] = {0,1,2,3,4,5,6,7,-8,-7,-6,-5,-4,-3,-2,-1};
-
-static inline int samp_clamp(int val)
-{
-    if (val < -32768) val = -32768;
-    if (val > 32767) val = 32767;
-    return val;
-}
 
 static void adpcm_block_predictor(int* hist1, int* hist2,
                                   int16_t a1best[16], int16_t a2best[16],
@@ -137,28 +140,27 @@ static void adpcm_block_predictor(int* hist1, int* hist2,
     int i,s;
 
     /* Coefficient selection pass */
-    unsigned epsilon = ~0;
+    unsigned checkErr = ~0;
     int bestI = 0;
     int lhist1;
     int lhist2;
     for (i=0 ; i<8 ; ++i)
     {
-        int avgErr = 0;
+        int totalErr = 0;
         lhist1 = *hist1;
         lhist2 = *hist2;
         for (s=0 ; s<PACKET_SAMPLES ; ++s)
         {
             int expSamp = samps[s] << 11;
             int testSamp = lhist1 * a1best[i] + lhist2 * a2best[i];
-            int err = expSamp - testSamp - 1024;
-            avgErr += err;
+            int err = abs(expSamp - testSamp);
+            totalErr += err;
             lhist2 = lhist1;
             lhist1 = samp_clamp(testSamp >> 11);
         }
-        unsigned avgEpsilon = abs(avgErr);
-        if (avgEpsilon < epsilon)
+        if (totalErr < checkErr)
         {
-            epsilon = avgEpsilon;
+            checkErr = totalErr;
             bestI = i;
         }
     }
@@ -172,7 +174,7 @@ static void adpcm_block_predictor(int* hist1, int* hist2,
     {
         int expSamp = samps[s] << 11;
         int testSamp = lhist1 * a1best[bestI] + lhist2 * a2best[bestI];
-        int err = expSamp - testSamp - 1024;
+        int err = expSamp - testSamp;
         err >>= 11;
         if (err > maxErr)
             maxErr = err;
@@ -203,9 +205,9 @@ static void adpcm_block_predictor(int* hist1, int* hist2,
     {
         int expSamp = samps[s] << 11;
         int testSamp = lhist1 * a1best[bestI] + lhist2 * a2best[bestI];
-        int err = expSamp - testSamp - 1024;
+        int err = expSamp - testSamp;
         err >>= 11;
-        errors[s] = err >> expLog & 0xf;
+        errors[s] = nibble_clamp(err >> expLog) & 0xf;
 
         /* Decoder predictor to track history state (and profile error) */
         int lastPred = nibble_to_int[(int)errors[s]] << expLog;
@@ -219,7 +221,7 @@ static void adpcm_block_predictor(int* hist1, int* hist2,
 
         /* PROFILE - sample error */
         //printf("%d\t%d\t%d\t%d\t%d\n", bestI, expLog, samps[s], lhist1, samps[s] - lhist1);
-        ERROR_AVG += samps[s] - lhist1;
+        ERROR_AVG += abs(samps[s] - lhist1);
         ++ERROR_SAMP_COUNT;
     }
     *hist1 = lhist1;
@@ -373,11 +375,11 @@ int main(int argc, char** argv)
     struct coef_pair_vote* votesBegin = calloc(VOTE_ALLOC_COUNT, sizeof(struct coef_pair_vote));
     struct coef_pair_vote* votesEnd = votesBegin;
     struct coef_pair_vote* votesMax = &votesBegin[VOTE_ALLOC_COUNT];
-    for (p=0 ; p<packetCount ; ++p)
+    for (p=0 ; p<correlateBlockCount ; ++p)
     {
         adpcm_block_vote(&votesBegin, &votesEnd, &votesMax, &samps[p*CORRELATE_SAMPLES]);
         size_t vc = votesEnd - votesBegin;
-        printf("\rCORRELATE [ %d / %d ] %zu votes          ", p+1, packetCount, vc);
+        printf("\rCORRELATE [ %d / %d ] %zu votes          ", p+1, correlateBlockCount, vc);
     }
     printf("\n");
 
@@ -428,8 +430,10 @@ int main(int argc, char** argv)
     {
         adpcm_block_predictor(&hist1, &hist2, a1best, a2best, &samps[p*PACKET_SAMPLES], block);
         fwrite(block, 1, 8, fout);
-        printf("\rPREDICT [ %d / %d ]          ", p+1, packetCount);
+        if (!(p%48))
+            printf("\rPREDICT [ %d / %d ]          ", p+1, packetCount);
     }
+    printf("\rPREDICT [ %d / %d ]          ", p, packetCount);
     printf("\nDONE! %d samples processed\n", packetCount * PACKET_SAMPLES);
     printf("\e[?25h"); /* show the cursor */
 
