@@ -5,12 +5,16 @@
 #include <errno.h>
 #include <math.h>
 
+void DSPCorrelateCoefs(short* source, int samples, short* coefs);
+//void EncodeBlock(short* source, int samples, byte* dest, short* coefs);
+void EncodeChunk(short* source, int samples, unsigned char* dest, short* coefs);
+
 #define VOTE_ALLOC_COUNT 1024
 #define CORRELATE_SAMPLES 0x3800 /* 1024 packets */
 #define PACKET_SAMPLES 14
 
 #ifdef __linux__
-#define ALSA_PLAY 0
+#define ALSA_PLAY 1
 #endif
 #if ALSA_PLAY
 #include <alsa/asoundlib.h>
@@ -32,7 +36,7 @@ struct dspadpcm_header
     uint32_t loop_start;
     uint32_t loop_end;
     uint32_t zero;
-    int16_t coef[8][2];
+    int16_t coef[16];
     int16_t gain;
     int16_t ps;
     int16_t hist1;
@@ -58,6 +62,8 @@ static inline int nibble_clamp(int val)
     if (val > 7) val = 7;
     return val;
 }
+
+#if 0
 
 /* Used to build distribution set of coefficients */
 struct coef_pair_vote
@@ -146,14 +152,14 @@ static void adpcm_block_predictor(int* hist1, int* hist2,
     int lhist2;
     for (i=0 ; i<8 ; ++i)
     {
-        int totalErr = 0;
+        unsigned totalErr = 0;
         lhist1 = *hist1;
         lhist2 = *hist2;
         for (s=0 ; s<PACKET_SAMPLES ; ++s)
         {
             int expSamp = samps[s] << 11;
             int testSamp = lhist1 * a1best[i] + lhist2 * a2best[i];
-            int err = abs(expSamp - testSamp);
+            unsigned err = abs(expSamp - testSamp);
             totalErr += err;
             lhist2 = lhist1;
             lhist1 = samp_clamp(testSamp >> 11);
@@ -238,9 +244,12 @@ static void adpcm_block_predictor(int* hist1, int* hist2,
         blockOut[s/2+1] = (errors[s] & 0xf) << 4 | (errors[s+1] & 0xf);
 }
 
+#endif
+
+
 int main(int argc, char** argv)
 {
-    int i,p;
+    int i,p,s;
 
     if (argc < 3)
     {
@@ -356,20 +365,15 @@ int main(int argc, char** argv)
 
     printf("\e[?25l"); /* hide the cursor */
 
-    int packetCount = samplecount / PACKET_SAMPLES;
-    int correlateBlockCount = samplecount / CORRELATE_SAMPLES + 1;
-
-    size_t sampsBufSz = (correlateBlockCount * CORRELATE_SAMPLES + 2) * 2;
+    int packetCount = ((samplecount / PACKET_SAMPLES) + PACKET_SAMPLES - 1) & ~(PACKET_SAMPLES - 1);
+    size_t sampsBufSz = (packetCount * PACKET_SAMPLES + 2) * 2;
     int16_t* sampsBuf = malloc(sampsBufSz);
     memset(sampsBuf, 0, sampsBufSz);
-    int16_t* samps = &sampsBuf[2];
-    fread(samps, samplecount, 2, fin);
+    int16_t* samps = sampsBuf+2;
+    fread(sampsBuf, samplecount, 2, fin);
     fclose(fin);
 
-    /* Extrapolate initial prev-samp */
-    int16_t da = samps[1] - samps[0];
-    samps[-1] = samps[0] - da;
-    samps[-2] = samps[-1] - da;
+#if 0
 
     /* Build distribution set */
     struct coef_pair_vote* votesBegin = calloc(VOTE_ALLOC_COUNT, sizeof(struct coef_pair_vote));
@@ -406,6 +410,10 @@ int main(int argc, char** argv)
             bestIt->votes = 0;
         }
     }
+#endif
+
+    int16_t coefs[16];
+    DSPCorrelateCoefs(samps, samplecount, coefs);
 
     /* Open output file */
     FILE* fout = fopen(argv[2], "wb");
@@ -413,22 +421,40 @@ int main(int argc, char** argv)
     header.num_samples = __builtin_bswap32(packetCount * PACKET_SAMPLES);
     header.num_nibbles = __builtin_bswap32(packetCount * 16);
     header.sample_rate = __builtin_bswap32(samplerate);
+    for (i=0 ; i<16 ; ++i)
+        header.coef[i] = __builtin_bswap16(coefs[i]);
+    /*
     for (i=0 ; i<8 ; ++i)
     {
         header.coef[i][0] = __builtin_bswap16(a1best[i]);
         header.coef[i][1] = __builtin_bswap16(a2best[i]);
     }
+    */
     header.hist1 = __builtin_bswap16(samps[-1]);
     header.hist2 = __builtin_bswap16(samps[-2]);
     fwrite(&header, 1, sizeof(header), fout);
 
     /* Execute encoding-predictor for each block */
-    int hist1 = samps[-1];
-    int hist2 = samps[-2];
-    char block[8];
+    //int hist1 = samps[-1];
+    //int hist2 = samps[-2];
+    int16_t convSamps[16] = {samps[-2], samps[-1]};
+    unsigned char block[8];
     for (p=0 ; p<packetCount ; ++p)
     {
-        adpcm_block_predictor(&hist1, &hist2, a1best, a2best, &samps[p*PACKET_SAMPLES], block);
+        //adpcm_block_predictor(&hist1, &hist2, a1best, a2best, &samps[p*PACKET_SAMPLES], block);
+        for (s=0 ; s<PACKET_SAMPLES ; ++s)
+            convSamps[s+2] = samps[p*PACKET_SAMPLES+s];
+
+        EncodeChunk(convSamps, PACKET_SAMPLES, block, coefs);
+
+#if ALSA_PLAY
+        snd_pcm_writei(ALSA_PCM, convSamps+2, PACKET_SAMPLES);
+#endif
+        fwrite(convSamps+2, 2, PACKET_SAMPLES, WAVE_FILE_OUT);
+
+        convSamps[0] = convSamps[14];
+        convSamps[1] = convSamps[15];
+
         fwrite(block, 1, 8, fout);
         if (!(p%48))
             printf("\rPREDICT [ %d / %d ]          ", p+1, packetCount);
@@ -437,12 +463,7 @@ int main(int argc, char** argv)
     printf("\nDONE! %d samples processed\n", packetCount * PACKET_SAMPLES);
     printf("\e[?25h"); /* show the cursor */
 
-    printf("ERROR: %ld\n", ERROR_AVG / ERROR_SAMP_COUNT);
-
-#if ALSA_PLAY
-    snd_pcm_drain(ALSA_PCM);
-    snd_pcm_close(ALSA_PCM);
-#endif
+    //printf("ERROR: %ld\n", ERROR_AVG / ERROR_SAMP_COUNT);
 
     uint32_t totalSz = ftell(WAVE_FILE_OUT) - 8;
     fseek(WAVE_FILE_OUT, 0, SEEK_SET);
@@ -469,8 +490,14 @@ int main(int argc, char** argv)
     fclose(WAVE_FILE_OUT);
 
     fclose(fout);
-    free(votesBegin);
+    //free(votesBegin);
     free(sampsBuf);
+
+#if ALSA_PLAY
+    snd_pcm_drain(ALSA_PCM);
+    snd_pcm_close(ALSA_PCM);
+#endif
+
     return 0;
 }
 
