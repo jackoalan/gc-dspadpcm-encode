@@ -167,26 +167,33 @@ static bool QuadraticMerge(tvec inOutVec)
     return fabs(v1) > 1.0;
 }
 
-static inline void FinishRecord(tvec in, tvec out)
+static void FinishRecord(tvec in, tvec out)
 {
+    for (int z=1 ; z<=2 ; z++)
+    {
+        if(in[z] >= 1.0)
+            in[z] = 0.9999999999;
+        if(in[z] <= -1.0)
+            in[z] = -0.9999999999;
+    }
     out[0] = 1.0;
     out[1] = (in[2] * in[1]) + in[1];
     out[2] = in[2];
 }
 
-static void Something7(tvec src, tvec dst)
+static void MatrixFilter(tvec src, tvec dst)
 {
-    double buffer[3][3];
+    tvec mtx[3];
 
-    buffer[2][0] = 1.0;
+    mtx[2][0] = 1.0;
     for (int i=1 ; i<=2 ; i++)
-        buffer[2][i] = -src[i];
+        mtx[2][i] = -src[i];
 
     for (int i=2 ; i>0 ; i--)
     {
-        double val = 1.0 - (buffer[i][i] * buffer[i][i]);
+        double val = 1.0 - (mtx[i][i] * mtx[i][i]);
         for (int y = 1; y <= i; y++)
-            buffer[i-1][y] = ((buffer[i][i] * buffer[i][y]) + buffer[i][y]) / val;
+            mtx[i-1][y] = ((mtx[i][i] * mtx[i][y]) + mtx[i][y]) / val;
     }
 
     dst[0] = 1.0;
@@ -194,13 +201,13 @@ static void Something7(tvec src, tvec dst)
     {
         dst[i] = 0.0;
         for (int y=1 ; y<=i ; y++)
-            dst[i] += buffer[i][y] * dst[i-y];
+            dst[i] += mtx[i][y] * dst[i-y];
     }
 }
 
-static int Something8(tvec src, tvec omgBuffer, tvec dst, double* outVar)
+static void MergeFinishRecord(tvec src, tvec dst)
 {
-    int count = 0;
+    tvec tmp;
     double val = src[0];
 
     dst[0] = 1.0;
@@ -215,10 +222,7 @@ static int Something8(tvec src, tvec omgBuffer, tvec dst, double* outVar)
         else
             dst[i] = 0.0;
 
-        omgBuffer[i] = dst[i];
-
-        if (fabs(omgBuffer[i]) > 1.0)
-            count++;
+        tmp[i] = dst[i];
 
         for (int y=1 ; y<i ; y++)
             dst[y] += dst[i] * dst[i - y];
@@ -226,8 +230,7 @@ static int Something8(tvec src, tvec omgBuffer, tvec dst, double* outVar)
         val *= 1.0 - (dst[i] * dst[i]);
     }
 
-    *outVar = val;
-    return count;
+    FinishRecord(tmp, dst);
 }
 
 static double ContrastVectors(tvec source1, tvec source2)
@@ -271,7 +274,7 @@ static void FilterRecords(tvec vecBest[8], int exp, tvec records[], int recordCo
                 }
             }
             buffer1[index]++;
-            Something7(records[z], buffer2);
+            MatrixFilter(records[z], buffer2);
             for (int i=0 ; i<=2 ; i++)
                 bufferList[index][i] += buffer2[i];
         }
@@ -282,17 +285,7 @@ static void FilterRecords(tvec vecBest[8], int exp, tvec records[], int recordCo
                     bufferList[i][y] /= buffer1[i];
 
         for (int i=0 ; i<exp ; i++)
-        {
-            Something8(bufferList[i], buffer2, vecBest[i], &tempVal);
-            for (int y=1 ; y<=2 ; y++)
-            {
-                if(buffer2[y] >= 1.0)
-                    buffer2[y] = 0.9999999999;
-                if (buffer2[y] <= -1.0)
-                    buffer2[y] = -0.9999999999;
-            }
-            FinishRecord(buffer2, vecBest[i]);
-        }
+            MergeFinishRecord(bufferList[i], vecBest[i]);
     }
 }
 
@@ -306,7 +299,6 @@ void DSPCorrelateCoefs(const short* source, int samples, short* coefsOut)
 
     tvec vec1;
     tvec vec2;
-    tvec vec3;
 
     tvec mtx[3];
     int vecIdxs[3];
@@ -354,13 +346,6 @@ void DSPCorrelateCoefs(const short* source, int samples, short* coefsOut)
                     BidirectionalFilter(mtx, vecIdxs, vec1);
                     if (!QuadraticMerge(vec1))
                     {
-                        for (int z=1 ; z<=2 ; z++)
-                        {
-                            if(vec1[z] >= 1.0)
-                                vec1[z] = 0.9999999999;
-                            if(vec1[z] <= -1.0)
-                                vec1[z] = -0.9999999999;
-                        }
                         FinishRecord(vec1, records[recordCount]);
                         recordCount++;
                     }
@@ -375,36 +360,25 @@ void DSPCorrelateCoefs(const short* source, int samples, short* coefsOut)
 
     for (int z=0 ; z<recordCount ; z++)
     {
-        Something7(records[z], vecBest[0]);
+        MatrixFilter(records[z], vecBest[0]);
         for (int y=1 ; y<=2 ; y++)
             vec1[y] += vecBest[0][y];
     }
     for (int y=1 ; y<=2 ; y++)
         vec1[y] /= recordCount;
 
-    double tmp;
-    Something8(vec1, vec2, vecBest[0], &tmp);
-    for (int y=1 ; y<=2 ; y++)
-    {
-        if (vec2[y] >= 1.0)
-            vec2[y] = 0.9999999999;
-        if (vec2[y] <= -1.0)
-            vec2[y] = -0.9999999999;
-    }
-    FinishRecord(vec2, vecBest[0]);
+    MergeFinishRecord(vec1, vecBest[0]);
+
 
     int exp = 1;
     for (int w=0 ; w<3 ;)
     {
-        vec3[0] = 0.0;
-        vec3[1] = -1.0;
-        vec3[2] = 0.0;
-        /*Something9(bufferArray, buffer2, 1 << w, 0.01);*/
-        {
-            for (int i=0 ; i<exp ; i++)
-                for (int y=0 ; y<=2 ; y++)
-                    vecBest[exp+i][y] = (0.01 * vec3[y]) + vecBest[i][y];
-        }
+        vec2[0] = 0.0;
+        vec2[1] = -1.0;
+        vec2[2] = 0.0;
+        for (int i=0 ; i<exp ; i++)
+            for (int y=0 ; y<=2 ; y++)
+                vecBest[exp+i][y] = (0.01 * vec2[y]) + vecBest[i][y];
         ++w;
         exp = 1 << w;
         FilterRecords(vecBest, exp, records, recordCount);
