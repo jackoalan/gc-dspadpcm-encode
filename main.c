@@ -21,9 +21,6 @@ snd_pcm_t* ALSA_PCM;
 #endif
 FILE* WAVE_FILE_OUT = NULL;
 
-static int64_t ERROR_AVG = 0;
-static int64_t ERROR_SAMP_COUNT = 0;
-
 /* Standard DSPADPCM header */
 struct dspadpcm_header
 {
