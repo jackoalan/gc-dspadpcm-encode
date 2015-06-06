@@ -134,7 +134,7 @@ static void BidirectionalFilter(tvec mtx[3], int* vecIdxs, tvec vecOut)
         if (x != 0)
             for (int y=x ; y<=i-1 ; y++)
                 tmp -= vecOut[y] * mtx[i][y];
-        else if(tmp != 0.0)
+        else if (tmp != 0.0)
             x = i;
         vecOut[i] = tmp;
     }
@@ -171,9 +171,9 @@ static void FinishRecord(tvec in, tvec out)
 {
     for (int z=1 ; z<=2 ; z++)
     {
-        if(in[z] >= 1.0)
+        if (in[z] >= 1.0)
             in[z] = 0.9999999999;
-        if(in[z] <= -1.0)
+        else if (in[z] <= -1.0)
             in[z] = -0.9999999999;
     }
     out[0] = 1.0;
@@ -235,7 +235,7 @@ static void MergeFinishRecord(tvec src, tvec dst)
 
 static double ContrastVectors(tvec source1, tvec source2)
 {
-    double val = (-source2[2] * -source2[1] + -source2[1]) / (1.0 - -source2[2] * -source2[2]);
+    double val = (-source2[2] * -source2[1] + -source2[1]) / (1.0 - source2[2] * source2[2]);
     double val1 = (source1[0] * source1[0]) + (source1[1] * source1[1]) + (source1[2] * source1[2]);
     double val2 = (source1[0] * source1[1]) + (source1[1] * source1[2]);
     double val3 = source1[0] * source1[2];
@@ -291,10 +291,10 @@ static void FilterRecords(tvec vecBest[8], int exp, tvec records[], int recordCo
 
 void DSPCorrelateCoefs(const short* source, int samples, short* coefsOut)
 {
-    int numBlocks = (samples + 13) / 14;
-    int blockSamples;
+    int numFrames = (samples + 13) / 14;
+    int frameSamples;
 
-    short* frameBuffer = calloc(sizeof(short), 0x3800);
+    short* blockBuffer = (short*)calloc(sizeof(short), 0x3800);
     short pcmHistBuffer[2][14] = {};
 
     tvec vec1;
@@ -303,7 +303,7 @@ void DSPCorrelateCoefs(const short* source, int samples, short* coefsOut)
     tvec mtx[3];
     int vecIdxs[3];
 
-    tvec* records = calloc(sizeof(tvec), numBlocks * 2);
+    tvec* records = (tvec*)calloc(sizeof(tvec), numFrames * 2);
     int recordCount = 0;
 
     tvec vecBest[8];
@@ -313,29 +313,29 @@ void DSPCorrelateCoefs(const short* source, int samples, short* coefsOut)
     {
         if (x > 0x3800) /* Full 1024-block frame */
         {
-            blockSamples = 0x3800;
+            frameSamples = 0x3800;
             x -= 0x3800;
         }
         else /* Partial frame */
         {
             /* Zero lingering block samples */
-            blockSamples = x;
-            for(int z=0 ; z<14 && z+blockSamples<0x3800 ; z++)
-                frameBuffer[blockSamples+z] = 0;
+            frameSamples = x;
+            for (int z=0 ; z<14 && z+frameSamples<0x3800 ; z++)
+                blockBuffer[frameSamples+z] = 0;
             x = 0;
         }
 
-        /* Copy (potentially non-block-aligned PCM samples into aligned buffer) */
-        memcpy(frameBuffer, source, blockSamples * sizeof(short));
-        source += blockSamples;
+        /* Copy (potentially non-frame-aligned PCM samples into aligned buffer) */
+        memcpy(blockBuffer, source, frameSamples * sizeof(short));
+        source += frameSamples;
 
 
-        for (int i=0 ; i<blockSamples ;)
+        for (int i=0 ; i<frameSamples ;)
         {
             for (int z=0 ; z<14 ; z++)
                 pcmHistBuffer[0][z] = pcmHistBuffer[1][z];
             for (int z=0 ; z<14 ; z++)
-                pcmHistBuffer[1][z] = frameBuffer[i++];
+                pcmHistBuffer[1][z] = blockBuffer[i++];
 
             InnerProductMerge(vec1, pcmHistBuffer[1]);
             if (fabs(vec1[0]) > 10.0)
@@ -403,14 +403,12 @@ void DSPCorrelateCoefs(const short* source, int samples, short* coefsOut)
 
     /* Free memory */
     free(records);
-    free(frameBuffer);
+    free(blockBuffer);
 
 }
 
-#if 1
-
-//Make sure source includes the yn values (16 samples total)
-void EncodeChunk(short* pcmInOut, int sampleCount, unsigned char* adpcmOut, const short* coefsIn)
+/* Make sure source includes the yn values (16 samples total) */
+void DSPEncodeFrame(short* pcmInOut, int sampleCount, unsigned char* adpcmOut, const short* coefsIn)
 {
     int buffer1[128];
     int buffer2[112];
@@ -544,11 +542,3 @@ void EncodeChunk(short* pcmInOut, int sampleCount, unsigned char* adpcmOut, cons
         p2 += 2;
     }
 }
-
-void EncodeBlock(short* source, int samples, unsigned char* dest, short* coefs)
-{
-    for (int i=0 ; i<samples ; i+=14, source+=14, dest+=8)
-        EncodeChunk(source, MIN(samples - i, 14), dest, coefs);
-}
-
-#endif
