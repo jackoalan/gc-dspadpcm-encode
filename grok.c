@@ -235,7 +235,7 @@ static void MergeFinishRecord(tvec src, tvec dst)
 
 static double ContrastVectors(tvec source1, tvec source2)
 {
-    double val = (-source2[2] * -source2[1] + -source2[1]) / (1.0 - source2[2] * source2[2]);
+    double val = (source2[2] * source2[1] + -source2[1]) / (1.0 - source2[2] * source2[2]);
     double val1 = (source1[0] * source1[0]) + (source1[1] * source1[1]) + (source1[2] * source1[2]);
     double val2 = (source1[0] * source1[1]) + (source1[1] * source1[2]);
     double val3 = source1[0] * source1[2];
