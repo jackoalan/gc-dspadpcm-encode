@@ -80,7 +80,7 @@ static bool AnalyzeRanges(tvec mtx[3], int* vecIdxsOut)
             }
         }
 
-        if (maxIndex == i)
+        if (maxIndex != i)
         {
             for (int y=1 ; y<=2 ; y++)
             {

@@ -183,7 +183,6 @@ int main(int argc, char** argv)
         header.coef[i] = __builtin_bswap16(coefs[i]);
     header.hist1 = __builtin_bswap16(samps[-1]);
     header.hist2 = __builtin_bswap16(samps[-2]);
-    fwrite(&header, 1, sizeof(header), fout);
 
     /* Execute encoding-predictor for each block */
     int16_t convSamps[16] = {samps[-2], samps[-1]};
@@ -202,6 +201,12 @@ int main(int argc, char** argv)
 
         convSamps[0] = convSamps[14];
         convSamps[1] = convSamps[15];
+        
+        if (p == 0)
+        {
+            header.ps = __builtin_bswap16(block[0]);
+            fwrite(&header, 1, sizeof(header), fout);
+        }
 
         fwrite(block, 1, 8, fout);
         if (!(p%48))
