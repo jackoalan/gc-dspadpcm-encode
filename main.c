@@ -166,12 +166,11 @@ int main(int argc, char** argv)
     size_t sampsBufSz = (packetCount * PACKET_SAMPLES + 2) * 2;
     int16_t* sampsBuf = malloc(sampsBufSz);
     memset(sampsBuf, 0, sampsBufSz);
-    int16_t* samps = sampsBuf+2;
     fread(sampsBuf, samplecount, 2, fin);
     fclose(fin);
 
     int16_t coefs[16];
-    DSPCorrelateCoefs(samps, samplecount, coefs);
+    DSPCorrelateCoefs(sampsBuf, samplecount, coefs);
 
     /* Open output file */
     FILE* fout = fopen(argv[2], "wb");
@@ -181,16 +180,14 @@ int main(int argc, char** argv)
     header.sample_rate = __builtin_bswap32(samplerate);
     for (i=0 ; i<16 ; ++i)
         header.coef[i] = __builtin_bswap16(coefs[i]);
-    header.hist1 = __builtin_bswap16(samps[-1]);
-    header.hist2 = __builtin_bswap16(samps[-2]);
 
     /* Execute encoding-predictor for each block */
-    int16_t convSamps[16] = {samps[-2], samps[-1]};
+    int16_t convSamps[16] = {0};
     unsigned char block[8];
     for (p=0 ; p<packetCount ; ++p)
     {
         for (s=0 ; s<PACKET_SAMPLES ; ++s)
-            convSamps[s+2] = samps[p*PACKET_SAMPLES+s];
+            convSamps[s+2] = sampsBuf[p*PACKET_SAMPLES+s];
 
         DSPEncodeFrame(convSamps, PACKET_SAMPLES, block, coefs);
 
