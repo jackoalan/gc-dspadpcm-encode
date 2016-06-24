@@ -8,9 +8,13 @@
 void DSPCorrelateCoefs(short* source, int samples, short* coefs);
 void DSPEncodeFrame(short* source, int samples, unsigned char* dest, short* coefs);
 
+#define MIN(a,b) (((a)<(b))?(a):(b))
+
 #define VOTE_ALLOC_COUNT 1024
 #define CORRELATE_SAMPLES 0x3800 /* 1024 packets */
+#define PACKET_NIBBLES 16
 #define PACKET_SAMPLES 14
+#define PACKET_BYTES 8
 
 #ifdef __linux__
 #define ALSA_PLAY 1
@@ -43,6 +47,36 @@ struct dspadpcm_header
     uint16_t pad[11];
 };
 
+static int GetNibbleFromSample(int samples)
+{
+    int packets = samples / PACKET_SAMPLES;
+    int extraSamples = samples % PACKET_SAMPLES;
+    int extraNibbles = extraSamples == 0 ? 0 : extraSamples + 2;
+
+    return PACKET_NIBBLES * packets + extraNibbles;
+}
+
+static int GetNibbleAddress(int sample)
+{
+    int packets = sample / PACKET_SAMPLES;
+    int extraSamples = sample % PACKET_SAMPLES;
+
+    return PACKET_NIBBLES * packets + extraSamples + 2;
+}
+
+static int GetBytesForAdpcmSamples(int samples)
+{
+    int extraBytes = 0;
+    int packets = samples / PACKET_SAMPLES;
+    int extraSamples = samples % PACKET_SAMPLES;
+
+    if (extraSamples != 0)
+    {
+        extraBytes = (extraSamples / 2) + (extraSamples % 2) + 1;
+    }
+
+    return PACKET_BYTES * packets + extraBytes;
+}
 
 int main(int argc, char** argv)
 {
@@ -162,8 +196,8 @@ int main(int argc, char** argv)
 
     printf("\e[?25l"); /* hide the cursor */
 
-    int packetCount = ((samplecount / PACKET_SAMPLES) + PACKET_SAMPLES - 1) & ~(PACKET_SAMPLES - 1);
-    size_t sampsBufSz = (packetCount * PACKET_SAMPLES + 2) * 2;
+    int packetCount = samplecount / PACKET_SAMPLES + (samplecount % PACKET_SAMPLES != 0);
+    size_t sampsBufSz = samplecount * 2;
     int16_t* sampsBuf = malloc(sampsBufSz);
     memset(sampsBuf, 0, sampsBufSz);
     fread(sampsBuf, samplecount, 2, fin);
@@ -175,8 +209,8 @@ int main(int argc, char** argv)
     /* Open output file */
     FILE* fout = fopen(argv[2], "wb");
     struct dspadpcm_header header = {};
-    header.num_samples = __builtin_bswap32(packetCount * PACKET_SAMPLES);
-    header.num_nibbles = __builtin_bswap32(packetCount * 16);
+    header.num_samples = __builtin_bswap32(samplecount);
+    header.num_nibbles = __builtin_bswap32(GetNibbleFromSample(samplecount));
     header.sample_rate = __builtin_bswap32(samplerate);
     for (i=0 ; i<16 ; ++i)
         header.coef[i] = __builtin_bswap16(coefs[i]);
@@ -186,7 +220,10 @@ int main(int argc, char** argv)
     unsigned char block[8];
     for (p=0 ; p<packetCount ; ++p)
     {
-        for (s=0 ; s<PACKET_SAMPLES ; ++s)
+        memset(convSamps + 2, 0, PACKET_SAMPLES * sizeof(int16_t));
+        int numSamples = MIN(samplecount - p * PACKET_SAMPLES, PACKET_SAMPLES);
+
+        for (s=0 ; s<numSamples; ++s)
             convSamps[s+2] = sampsBuf[p*PACKET_SAMPLES+s];
 
         DSPEncodeFrame(convSamps, PACKET_SAMPLES, block, coefs);
@@ -205,12 +242,13 @@ int main(int argc, char** argv)
             fwrite(&header, 1, sizeof(header), fout);
         }
 
-        fwrite(block, 1, 8, fout);
+        fwrite(block, 1, GetBytesForAdpcmSamples(numSamples), fout);
+        
         if (!(p%48))
             printf("\rPREDICT [ %d / %d ]          ", p+1, packetCount);
     }
     printf("\rPREDICT [ %d / %d ]          ", p, packetCount);
-    printf("\nDONE! %d samples processed\n", packetCount * PACKET_SAMPLES);
+    printf("\nDONE! %d samples processed\n", samplecount);
     printf("\e[?25h"); /* show the cursor */
 
     //printf("ERROR: %ld\n", ERROR_AVG / ERROR_SAMP_COUNT);
