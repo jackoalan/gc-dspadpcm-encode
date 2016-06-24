@@ -35,7 +35,7 @@ struct dspadpcm_header
     uint16_t format; /* 0 for ADPCM */
     uint32_t loop_start;
     uint32_t loop_end;
-    uint32_t zero;
+    uint32_t ca;
     int16_t coef[16];
     int16_t gain;
     int16_t ps;
@@ -212,6 +212,9 @@ int main(int argc, char** argv)
     header.num_samples = __builtin_bswap32(samplecount);
     header.num_nibbles = __builtin_bswap32(GetNibbleFromSample(samplecount));
     header.sample_rate = __builtin_bswap32(samplerate);
+    header.loop_start = __builtin_bswap32(GetNibbleAddress(0));
+    header.loop_end = __builtin_bswap32(GetNibbleAddress(samplecount - 1));
+    header.ca = __builtin_bswap32(GetNibbleAddress(0));
     for (i=0 ; i<16 ; ++i)
         header.coef[i] = __builtin_bswap16(coefs[i]);
 
