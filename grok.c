@@ -3,6 +3,7 @@
 #include <math.h>
 #include <float.h>
 #include <string.h>
+#include <limits.h>
 
 /* Reference:
  * https://code.google.com/p/brawltools/source/browse/trunk/BrawlLib/Wii/Audio/AudioConverter.cs
@@ -408,71 +409,59 @@ void DSPCorrelateCoefs(const short* source, int samples, short* coefsOut)
 }
 
 /* Make sure source includes the yn values (16 samples total) */
-void DSPEncodeFrame(short* pcmInOut, int sampleCount, unsigned char* adpcmOut, const short* coefsIn)
+void DSPEncodeFrame(short pcmInOut[16], int sampleCount, unsigned char adpcmOut[8], const short coefsIn[8][2])
 {
-    int buffer1[128];
-    int buffer2[112];
+    int inSamples[8][16];
+    int outSamples[8][14];
 
-    unsigned bestDistance = ~0;
-    unsigned distAccum;
     int bestIndex = 0;
-    int bestScale = 0;
 
-    int distance, index, scale;
-
-    int *p1, *p2, *t1, *t2;
-    short* sPtr;
-    int v1, v2, v3;
+    int scale[8];
+    unsigned distAccum[8];
 
     /* Iterate through each coef set, finding the set with the smallest error */
-    p1 = buffer1;
-    p2 = buffer2;
-    for (int i=0 ; i<8 ; i++, p1+=16, p2+=14, coefsIn+=2)
+    for (int i=0 ; i<8 ; i++)
     {
+        int v1, v2, v3;
+        int distance, index;
+
         /* Set yn values */
-        t1 = p1;
-        *t1++ = pcmInOut[0];
-        *t1++ = pcmInOut[1];
+        inSamples[i][0] = pcmInOut[0];
+        inSamples[i][1] = pcmInOut[1];
 
         /* Round and clamp samples for this coef set */
         distance = 0;
-        sPtr = pcmInOut;
-        for (int y=0 ; y<sampleCount ; y++)
+        for (int s=0 ; s<sampleCount ; s++)
         {
             /* Multiply previous samples by coefs */
-            *t1++ = v1 = ((sPtr[0] * coefsIn[1]) + (sPtr[1] * coefsIn[0])) >> 11;
+            inSamples[i][s + 2] = v1 = ((pcmInOut[s] * coefsIn[i][1]) + (pcmInOut[s + 1] * coefsIn[i][0])) >> 11;
             /* Subtract from current sample */
-            v2 = sPtr[2] - v1;
+            v2 = pcmInOut[s + 2] - v1;
             /* Clamp */
             v3 = (v2 >= 32767) ? 32767 : (v2 <= -32768) ? -32768 : v2;
             /* Compare distance */
             if (abs(v3) > abs(distance))
                 distance = v3;
-
-            sPtr += 1;
         }
 
         /* Set initial scale */
-        for (scale=0 ; (scale<=12) && ((distance>7) || (distance<-8)); scale++, distance>>=1) {}
-        scale = (scale <= 1) ? -1 : scale - 2;
+        for (scale[i]=0; (scale[i]<=12) && ((distance>7) || (distance<-8)); scale[i]++, distance>>=1) {}
+        scale[i] = (scale[i] <= 1) ? -1 : scale[i] - 2;
 
         do
         {
-            scale++;
-            distAccum = 0;
+            scale[i]++;
+            distAccum[i] = 0;
             index = 0;
 
-            t1 = p1;
-            t2 = p2;
-            sPtr = pcmInOut + 2;
-            for (int y=0 ; y<sampleCount ; y++)
+            for (int s=0 ; s<sampleCount ; s++)
             {
                 /* Multiply previous */
-                v1 = ((t1[0] * coefsIn[1]) + (t1[1] * coefsIn[0]));
+                v1 = ((inSamples[i][s] * coefsIn[i][1]) + (inSamples[i][s + 1] * coefsIn[i][0]));
                 /* Evaluate from real sample */
-                v2 = ((*sPtr << 11) - v1) / 2048;
+                v2 = ((pcmInOut[s + 2] << 11) - v1) / 2048;
                 /* Round to nearest sample */
-                v3 = (v2 > 0) ? (int)((double)v2 / (1 << scale) + 0.4999999f) : (int)((double)v2 / (1 << scale) - 0.4999999f);
+                v3 = (v2 > 0) ? (int)((double)v2 / (1 << scale[i]) + 0.4999999f) : (int)((double)v2 / (1 << scale[i]) - 0.4999999f);
 
                 /* Clamp sample and set index */
                 if (v3 < -8)
@@ -489,56 +478,47 @@ void DSPEncodeFrame(short* pcmInOut, int sampleCount, unsigned char* adpcmOut, c
                 }
 
                 /* Store result */
-                *t2++ = v3;
+                outSamples[i][s] = v3;
 
                 /* Round and expand */
-                v1 = (v1 + ((v3 * (1 << scale)) << 11) + 1024) >> 11;
+                v1 = (v1 + ((v3 * (1 << scale[i])) << 11) + 1024) >> 11;
                 /* Clamp and store */
-                t1[2] = v2 = (v1 >= 32767) ? 32767 : (v1 <= -32768) ? -32768 : v1;
+                inSamples[i][s + 2] = v2 = (v1 >= 32767) ? 32767 : (v1 <= -32768) ? -32768 : v1;
                 /* Accumulate distance */
-                v3 = *sPtr++ - v2;
-                distAccum += v3 * v3;
-
-                t1 += 1;
-
-                /* Break if we're higher than a previous search */
-                if (distAccum >= bestDistance)
-                    break;
+                v3 = pcmInOut[s + 2] - v2;
+                distAccum[i] += v3 * v3;
             }
 
             for (int x=index+8 ; x>256 ; x>>=1)
-                if (++scale >= 12)
-                    scale = 11;
+                if (++scale[i] >= 12)
+                    scale[i] = 11;
 
-        } while ((scale < 12) && (index > 1));
+        } while ((scale[i] < 12) && (index > 1));
+    }
 
-        if (distAccum < bestDistance)
+    for (int i = 0, min = INT_MAX; i < 8; i++)
+    {
+        if (distAccum[i] < min)
         {
-            bestDistance = distAccum;
+            min = distAccum[i];
             bestIndex = i;
-            bestScale = scale;
         }
     }
 
-    p1 = buffer1 + (bestIndex * 16) + 2;
-    p2 = buffer2 + (bestIndex * 14);
-
     /* Write converted samples */
-    sPtr = pcmInOut + 2;
-    for (int i=0 ; i<sampleCount ; i++)
-        *sPtr++ = (short)*p1++;
+    for (int s=0 ; s<sampleCount ; s++)
+        pcmInOut[s + 2] = inSamples[bestIndex][s + 2];
 
     /* Write ps */
-    *adpcmOut++ = (char)((bestIndex << 4) | (bestScale & 0xF));
+    adpcmOut[0] = (char)((bestIndex << 4) | (scale[bestIndex] & 0xF));
 
     /* Zero remaining samples */
-    for (int i=sampleCount ; i<14 ; i++)
-        p2[i] = 0;
+    for (int s=sampleCount ; s<14 ; s++)
+        outSamples[bestIndex][s] = 0;
 
     /* Write output samples */
-    for (int y=0 ; y++<7 ;)
+    for (int y=0; y<7; y++)
     {
-        *adpcmOut++ = (char)((p2[0] << 4) | (p2[1] & 0xF));
-        p2 += 2;
+        adpcmOut[y + 1] = (char)((outSamples[bestIndex][y * 2] << 4) | (outSamples[bestIndex][y * 2 + 1] & 0xF));
     }
 }
