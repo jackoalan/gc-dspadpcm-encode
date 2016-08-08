@@ -417,7 +417,7 @@ void DSPEncodeFrame(short pcmInOut[16], int sampleCount, unsigned char adpcmOut[
     int bestIndex = 0;
 
     int scale[8];
-    unsigned distAccum[8];
+    double distAccum[8];
 
     /* Iterate through each coef set, finding the set with the smallest error */
     for (int i=0 ; i<8 ; i++)
@@ -434,7 +434,7 @@ void DSPEncodeFrame(short pcmInOut[16], int sampleCount, unsigned char adpcmOut[
         for (int s=0 ; s<sampleCount ; s++)
         {
             /* Multiply previous samples by coefs */
-            inSamples[i][s + 2] = v1 = ((pcmInOut[s] * coefsIn[i][1]) + (pcmInOut[s + 1] * coefsIn[i][0])) >> 11;
+            inSamples[i][s + 2] = v1 = ((pcmInOut[s] * coefsIn[i][1]) + (pcmInOut[s + 1] * coefsIn[i][0])) / 2048;
             /* Subtract from current sample */
             v2 = pcmInOut[s + 2] - v1;
             /* Clamp */
@@ -445,7 +445,7 @@ void DSPEncodeFrame(short pcmInOut[16], int sampleCount, unsigned char adpcmOut[
         }
 
         /* Set initial scale */
-        for (scale[i]=0; (scale[i]<=12) && ((distance>7) || (distance<-8)); scale[i]++, distance>>=1) {}
+        for (scale[i]=0; (scale[i]<=12) && ((distance>7) || (distance<-8)); scale[i]++, distance/=2) {}
         scale[i] = (scale[i] <= 1) ? -1 : scale[i] - 2;
 
         do
@@ -486,7 +486,7 @@ void DSPEncodeFrame(short pcmInOut[16], int sampleCount, unsigned char adpcmOut[
                 inSamples[i][s + 2] = v2 = (v1 >= 32767) ? 32767 : (v1 <= -32768) ? -32768 : v1;
                 /* Accumulate distance */
                 v3 = pcmInOut[s + 2] - v2;
-                distAccum[i] += v3 * v3;
+                distAccum[i] += v3 * (double)v3;
             }
 
             for (int x=index+8 ; x>256 ; x>>=1)
@@ -496,7 +496,8 @@ void DSPEncodeFrame(short pcmInOut[16], int sampleCount, unsigned char adpcmOut[
         } while ((scale[i] < 12) && (index > 1));
     }
 
-    for (int i = 0, min = INT_MAX; i < 8; i++)
+    double min = DBL_MAX;
+    for (int i = 0; i < 8; i++)
     {
         if (distAccum[i] < min)
         {
