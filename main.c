@@ -3,7 +3,6 @@
 #include <stdlib.h>
 #include <string.h>
 #include <errno.h>
-#include <math.h>
 
 void DSPCorrelateCoefs(short* source, int samples, short* coefs);
 void DSPEncodeFrame(short* source, int samples, unsigned char* dest, short* coefs);

@@ -3,7 +3,6 @@
 #include <math.h>
 #include <float.h>
 #include <string.h>
-#include <limits.h>
 
 /* Reference:
  * https://code.google.com/p/brawltools/source/browse/trunk/BrawlLib/Wii/Audio/AudioConverter.cs
